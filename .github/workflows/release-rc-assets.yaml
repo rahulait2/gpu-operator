@@ -134,6 +134,11 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: regctl registry login ghcr.io -u "${GITHUB_ACTOR}" -p "${GH_TOKEN}"
 
+      - name: Login to GitHub Container Registry for Helm
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: echo "${GH_TOKEN}" | helm registry login ghcr.io -u "${GITHUB_ACTOR}" --password-stdin
+
       - name: Login to GitHub Container Registry for Docker
         uses: docker/login-action@v4
         with:
@@ -302,6 +307,25 @@ jobs:
           echo "image_list_asset=${IMAGE_LIST_ASSET}" >> "${GITHUB_OUTPUT}"
           echo "::notice::Packaged assets:"
           ls -lah "${DIST_DIR}"
+
+      - name: Publish Helm OCI chart
+        env:
+          RELEASE_TAG: ${{ steps.validate.outputs.release_tag }}
+          GH_REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          REPOSITORY="$(echo "${GH_REPOSITORY}" | tr '[:upper:]' '[:lower:]')"
+          CHART_PACKAGE="dist/gpu-operator-${RELEASE_TAG}.tgz"
+          CHART_REPOSITORY="oci://ghcr.io/${REPOSITORY}/charts"
+
+          if [[ ! -f "${CHART_PACKAGE}" ]]; then
+            echo "::error::Helm chart package does not exist: ${CHART_PACKAGE}"
+            exit 1
+          fi
+
+          helm push "${CHART_PACKAGE}" "${CHART_REPOSITORY}"
+          echo "::notice::Published Helm chart to ${CHART_REPOSITORY}/gpu-operator:${RELEASE_TAG}"
 
       - name: Verify expected images are available
         env:
