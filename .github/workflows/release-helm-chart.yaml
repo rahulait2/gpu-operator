@@ -106,14 +106,22 @@ jobs:
           OWNER_LOWER="$(echo "${OWNER}" | tr '[:upper:]' '[:lower:]')"
           HELM_REPO_DIR="gh-pages/stable"
           HELM_REPO_URL="https://${OWNER_LOWER}.github.io/${REPOSITORY_NAME}/stable"
+          INDEX_DIR="${RUNNER_TEMP}/helm-index"
 
+          # Index only the new chart, then merge the existing index so older chart
+          # entries keep their original created timestamps.
           mkdir -p "${HELM_REPO_DIR}"
-          cp "${CHART_PACKAGE}" "${HELM_REPO_DIR}/${CHART_PACKAGE_NAME}"
+          mkdir -p "${INDEX_DIR}"
+          cp "${CHART_PACKAGE}" "${INDEX_DIR}/${CHART_PACKAGE_NAME}"
+
           if [[ -f "${HELM_REPO_DIR}/index.yaml" ]]; then
-            helm repo index "${HELM_REPO_DIR}" --url "${HELM_REPO_URL}" --merge "${HELM_REPO_DIR}/index.yaml"
+            helm repo index "${INDEX_DIR}" --url "${HELM_REPO_URL}" --merge "${HELM_REPO_DIR}/index.yaml"
           else
-            helm repo index "${HELM_REPO_DIR}" --url "${HELM_REPO_URL}"
+            helm repo index "${INDEX_DIR}" --url "${HELM_REPO_URL}"
           fi
+
+          cp "${INDEX_DIR}/${CHART_PACKAGE_NAME}" "${HELM_REPO_DIR}/${CHART_PACKAGE_NAME}"
+          cp "${INDEX_DIR}/index.yaml" "${HELM_REPO_DIR}/index.yaml"
 
           git -C gh-pages config user.name "github-actions[bot]"
           git -C gh-pages config user.email "41898282+github-actions[bot]@users.noreply.github.com"
