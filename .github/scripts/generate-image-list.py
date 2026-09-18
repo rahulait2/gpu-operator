@@ -150,6 +150,38 @@ def _fetch_all_tags(registry_host: str, namespace: str) -> list[str]:
     return tags
 
 
+def _resolve_image_digest(image_reference: str) -> str:
+    """Return a tag-and-digest reference for an image tag."""
+    registry_host, repository_and_tag = image_reference.split("/", 1)
+    namespace, separator, tag = repository_and_tag.rpartition(":")
+    if not separator:
+        raise ValueError(f"Image reference does not contain a tag: {image_reference}")
+
+    token = _registry_token(registry_host, namespace)
+    manifest_url = (
+        f"https://{registry_host}/v2/{namespace}/manifests/"
+        f"{urllib.parse.quote(tag, safe='')}"
+    )
+    request = urllib.request.Request(
+        manifest_url,
+        method="HEAD",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": ", ".join([
+                "application/vnd.oci.image.index.v1+json",
+                "application/vnd.docker.distribution.manifest.list.v2+json",
+                "application/vnd.oci.image.manifest.v1+json",
+                "application/vnd.docker.distribution.manifest.v2+json",
+            ]),
+        },
+    )
+    with urllib.request.urlopen(request, timeout=15) as response:
+        digest = response.headers.get("Docker-Content-Digest")
+    if not digest:
+        raise RuntimeError(f"No digest returned for {image_reference}")
+    return f"{image_reference}@{digest}"
+
+
 def _parse_link_next(link_header: str) -> str | None:
     """Extract the URL from a `Link: <url>; rel="next"` header, if present."""
     for part in link_header.split(","):
@@ -430,31 +462,15 @@ def _extract_nfd_images(nfd_values: dict, nfd_chart: dict) -> list[str]:
 # OLM bundle image extraction
 # ---------------------------------------------------------------------------
 
-def _replace_image_version(image_reference: str, version: str) -> str:
-    """Replace an image tag with version, dropping a stale digest if needed."""
-    image_without_digest = image_reference.split("@", 1)[0]
-    last_slash = image_without_digest.rfind("/")
-    last_colon = image_without_digest.rfind(":")
-    current_version = ""
-    image_name = image_without_digest
-    if last_colon > last_slash:
-        image_name = image_without_digest[:last_colon]
-        current_version = image_without_digest[last_colon + 1:]
-
-    if current_version == version:
-        return image_reference
-    return f"{image_name}:{version}"
-
-
 def _extract_olm_images(
     csv: dict,
-    gpu_operator_version: str | None = None,
+    gpu_operator_image: str | None = None,
 ) -> list[str]:
     """Return image references declared by the OLM bundle.
 
     OLM uses ``spec.relatedImages`` to declare every image that the operator
-    can reference. Preserve digest-pinned references, except when replacing a
-    stale GPU Operator version with the version selected by the Helm chart.
+    can reference. Preserve digest-pinned references, except for the GPU
+    Operator image, which must match the reference used by the Helm chart.
     """
     spec = csv.get("spec")
     related_images = spec.get("relatedImages") if isinstance(spec, dict) else None
@@ -469,16 +485,13 @@ def _extract_olm_images(
         if not image_reference:
             raise ValueError("OLM CSV contains an invalid relatedImages entry")
         if (
-            gpu_operator_version
+            gpu_operator_image
             and related_image.get("name") in {
                 "gpu-operator-image",
                 "gpu-operator-validator-image",
             }
         ):
-            image_reference = _replace_image_version(
-                image_reference,
-                gpu_operator_version,
-            )
+            image_reference = gpu_operator_image
         images.add(image_reference)
     return sorted(images)
 
@@ -611,12 +624,16 @@ def main() -> None:
 
     csv = _load_yaml(args.csv)
     operator = values.get("operator") or {}
-    gpu_operator_version = (
+    gpu_operator_image = _build_ref(
+        operator.get("repository", ""),
+        operator.get("image", ""),
         operator.get("version")
         or args.gpu_operator_version
-        or app_version
+        or app_version,
     )
-    olm_images = _extract_olm_images(csv, gpu_operator_version)
+    if gpu_operator_image and not args.skip_registry:
+        gpu_operator_image = _resolve_image_digest(gpu_operator_image)
+    olm_images = _extract_olm_images(csv, gpu_operator_image)
 
     output_text = _format_image_list(
         helm_images,
